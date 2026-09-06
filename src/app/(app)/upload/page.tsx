@@ -2,19 +2,27 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { UploadCloud, FileText, Loader2, CheckCircle2 } from "lucide-react";
+import { UploadCloud, FileText, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 import { useAuth } from "@/lib/AuthContext";
 import { getAllInvoices, saveInvoice, addNotification } from "@/lib/store";
 import { simulateExtraction, generateAiInsights } from "@/lib/mockAI";
+import { extractPdfText } from "@/lib/pdfText";
+import { parseInvoiceText } from "@/lib/parseInvoiceText";
 import { Invoice } from "@/lib/types";
 
 const ACCEPTED = ["application/pdf", "image/png", "image/jpeg"];
+
+// Storing the whole file as a base64 data URL in localStorage lets you
+// re-open it later, but large files (e.g. multi-MB phone photos) can blow
+// past the browser's localStorage quota and make saving silently fail.
+// Cap it so the demo never hangs on a big upload.
+const MAX_PREVIEW_BYTES = 1_500_000;
 
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
+    reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
 }
@@ -28,6 +36,7 @@ export default function UploadPage() {
   const [error, setError] = useState("");
   const [stage, setStage] = useState<"idle" | "uploading" | "extracting" | "done">("idle");
   const [progress, setProgress] = useState(0);
+  const [usedRealExtraction, setUsedRealExtraction] = useState(false);
 
   const handleFiles = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -42,55 +51,82 @@ export default function UploadPage() {
 
   async function processFile() {
     if (!file || !user) return;
+    setError("");
     setStage("uploading");
-    setProgress(0);
+    setProgress(15);
 
-    const interval = setInterval(() => {
-      setProgress((p) => Math.min(p + 12, 90));
-    }, 120);
+    try {
+      // Run the (small, capped) file preview encode and the real PDF text
+      // extraction in parallel instead of one after another.
+      const previewPromise =
+        file.size <= MAX_PREVIEW_BYTES ? fileToDataUrl(file).catch(() => "") : Promise.resolve("");
 
-    const fileDataUrl = await fileToDataUrl(file).catch(() => "");
+      let parsedText = "";
+      if (file.type === "application/pdf") {
+        parsedText = await extractPdfText(file).catch(() => "");
+      }
 
-    await new Promise((r) => setTimeout(r, 900));
-    setStage("extracting");
+      setStage("extracting");
+      setProgress(65);
 
-    const extracted = simulateExtraction(file.name);
-    const existing = getAllInvoices();
-    const insights = generateAiInsights(
-      { vendor: extracted.vendor, total: extracted.total, dueDate: extracted.dueDate, invoiceNumber: extracted.invoiceNumber },
-      existing
-    );
+      const fileDataUrl = await previewPromise;
 
-    await new Promise((r) => setTimeout(r, 900));
-    clearInterval(interval);
-    setProgress(100);
+      const fromRealDoc = file.type === "application/pdf" ? parseInvoiceText(parsedText, file.name) : null;
+      const extracted = fromRealDoc ?? simulateExtraction(file.name);
+      setUsedRealExtraction(Boolean(fromRealDoc));
 
-    const invoice: Invoice = {
-      id: crypto.randomUUID(),
-      ...extracted,
-      status: "Draft",
-      fileName: file.name,
-      fileDataUrl,
-      aiSummary: insights.summary,
-      aiRecommendation: insights.recommendation,
-      aiRisk: insights.risk,
-      aiFlags: insights.flags,
-      createdBy: user.id,
-      createdAt: new Date().toISOString(),
-      statusHistory: [{ status: "Draft", at: new Date().toISOString() }],
-    };
+      const existing = getAllInvoices();
+      const insights = generateAiInsights(
+        {
+          vendor: extracted.vendor,
+          total: extracted.total,
+          dueDate: extracted.dueDate,
+          invoiceNumber: extracted.invoiceNumber,
+        },
+        existing
+      );
 
-    saveInvoice(invoice);
-    addNotification(user.id, {
-      id: crypto.randomUUID(),
-      message: `Invoice ${invoice.invoiceNumber} uploaded and processed.`,
-      type: "upload",
-      createdAt: new Date().toISOString(),
-      read: false,
-    });
+      setProgress(100);
 
-    setStage("done");
-    setTimeout(() => router.push(`/invoices/${invoice.id}`), 700);
+      const invoice: Invoice = {
+        id: crypto.randomUUID(),
+        ...extracted,
+        status: "Draft",
+        fileName: file.name,
+        fileDataUrl,
+        aiSummary: insights.summary,
+        aiRecommendation: insights.recommendation,
+        aiRisk: insights.risk,
+        aiFlags: insights.flags,
+        createdBy: user.id,
+        createdAt: new Date().toISOString(),
+        statusHistory: [{ status: "Draft", at: new Date().toISOString() }],
+      };
+
+      try {
+        saveInvoice(invoice);
+      } catch {
+        // Most likely a localStorage quota error from a large file preview —
+        // drop the preview and retry once rather than leaving the user stuck.
+        invoice.fileDataUrl = "";
+        saveInvoice(invoice);
+      }
+
+      addNotification(user.id, {
+        id: crypto.randomUUID(),
+        message: `Invoice ${invoice.invoiceNumber} uploaded and processed.`,
+        type: "upload",
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+
+      setStage("done");
+      setTimeout(() => router.push(`/invoices/${invoice.id}`), 400);
+    } catch {
+      setError("Something went wrong while processing this file. Please try again.");
+      setStage("idle");
+      setProgress(0);
+    }
   }
 
   return (
@@ -161,8 +197,8 @@ export default function UploadPage() {
             <Loader2 size={20} className="animate-spin text-accent-dark" />
             <p className="text-sm font-medium">
               {stage === "uploading"
-                ? "Uploading file to storage…"
-                : "Extracting invoice fields with AI…"}
+                ? "Reading file…"
+                : "Extracting invoice fields…"}
             </p>
           </div>
           <div className="h-2 rounded-full bg-black/5 overflow-hidden">
@@ -175,9 +211,19 @@ export default function UploadPage() {
       )}
 
       {stage === "done" && (
-        <div className="bg-surface border border-border rounded-xl p-6 flex items-center gap-3 animate-fade-up">
-          <CheckCircle2 size={20} className="text-emerald-600" />
-          <p className="text-sm font-medium">Done! Opening invoice for review…</p>
+        <div className="bg-surface border border-border rounded-xl p-6 space-y-2 animate-fade-up">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 size={20} className="text-emerald-600" />
+            <p className="text-sm font-medium">Done! Opening invoice for review…</p>
+          </div>
+          {!usedRealExtraction && (
+            <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 rounded-lg px-3 py-2">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              This file&apos;s fields couldn&apos;t be read directly (a photo, scan, or
+              unusual layout), so they were filled in with simulated demo data —
+              please review and correct them.
+            </div>
+          )}
         </div>
       )}
     </div>
