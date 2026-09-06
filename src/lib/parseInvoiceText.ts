@@ -132,7 +132,9 @@ export function parseInvoiceText(rawText: string, fileName: string): ExtractedFi
   if (text.length < 30) return null;
 
   const totalRaw = firstMatch(text, [
-    /(?:grand\s*total|total\s*amount\s*due|total\s*due|amount\s*paid|paid|total)\s*[:\-]?\s*(?:inr|rs\.?|usd|₹|\$)?\s*([\d,]+\.\d{2})/i,
+    // \b before the group matters: without it, "total" also matches inside
+    // "Subtotal", so "Subtotal: 5,000.00" would be misread as the total.
+    /\b(?:grand\s*total|total\s*amount\s*due|total\s*due|amount\s*paid|paid|total)\b\s*[:\-]?\s*(?:inr|rs\.?|usd|₹|\$)?\s*([\d,]+\.\d{2})/i,
     /(?:inr|₹|\$)\s*([\d,]+\.\d{2})/i,
     // Some invoice templates put the amount before its label instead of
     // after ("1,366,695.00 Total" rather than "Total: 1,366,695.00").
@@ -174,7 +176,9 @@ export function parseInvoiceText(rawText: string, fileName: string): ExtractedFi
   ]);
 
   const taxRaw = firstMatch(text, [
-    /(?:igst|cgst|sgst|gst|tax)\s*(?:\(\s*\d+\s*%\s*\))?\s*[:\-]?\s*(?:inr|₹)?\s*([\d,]+\.\d{2})/i,
+    // \b after the group matters: without it, "tax" also matches inside
+    // "Taxable", so "Taxable Amount: 5,000.00" could be misread as tax.
+    /\b(?:igst|cgst|sgst|gst|tax)\b\s*(?:\(\s*\d+\s*%\s*\))?\s*[:\-]?\s*(?:inr|₹)?\s*([\d,]+\.\d{2})/i,
   ]);
 
   // Require an unbroken run of capitalized "word" tokens right before a

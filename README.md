@@ -12,9 +12,13 @@ keeps the implementation simple and free to run:
 - **No paid cloud services required.** The report's target architecture uses
   Azure AI Document Intelligence, Azure OpenAI, Azure SQL Database, Azure Blob
   Storage, and Azure AD B2C. For this demo, those are replaced with equivalent
-  client-side logic — simulated OCR extraction, a template-based "AI insights"
-  generator, and `localStorage` in place of a database — so the whole app runs
-  entirely in the browser and deploys for free on Vercel.
+  client-side logic — real text extraction from digitally-generated PDFs
+  (`pdfjs-dist`) plus real in-browser OCR (`tesseract.js`) for scanned pages
+  and photos, a template-based "AI insights" generator, and `localStorage` in
+  place of a database — so the whole app runs entirely in the browser and
+  deploys for free on Vercel. Only a genuinely unreadable file (very low-
+  quality scan, corrupted PDF) falls back to simulated placeholder data,
+  clearly flagged as such in the UI.
 - **Everything else matches the report**: the Draft → Pending →
   Approved/Rejected → Paid workflow, the dashboard/invoices/upload/analytics/
   notifications/profile/settings pages, search & filters, CSV export, and the
@@ -26,13 +30,15 @@ keeps the implementation simple and free to run:
 - Tailwind CSS
 - Recharts (dashboard & analytics charts)
 - lucide-react (icons)
+- `pdfjs-dist` (embedded PDF text extraction) + `tesseract.js` (in-browser OCR)
 - Browser `localStorage` as the data layer (users, invoices, notifications)
 
 ## Features
 
 - Sign up / sign in (demo auth, stored in `localStorage`)
 - Dashboard with KPI cards, monthly spend trend, and status breakdown
-- Drag-and-drop invoice upload (PDF/PNG/JPG) with simulated AI extraction
+- Drag-and-drop invoice upload (PDF/PNG/JPG) with real field extraction —
+  embedded PDF text when available, OCR (scanned pages/photos) otherwise
 - Editable invoice detail page with line items and AI insights (summary,
   payment recommendation, risk flag, duplicate/anomaly detection)
 - Approval workflow: Draft → Pending → Approved/Rejected → Paid
